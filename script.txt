@@ -1,0 +1,89 @@
+delete window.$;
+let wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
+webpackChunkdiscord_app.pop();
+
+let QuestsStore = Object.values(wpRequire.c).find(x => x?.exports?.A?.__proto__?.getQuest)?.exports?.A;
+let ChannelStore = Object.values(wpRequire.c).find(x => x?.exports?.A?.__proto__?.getAllThreadsForParent)?.exports?.A;
+let GuildChannelStore = Object.values(wpRequire.c).find(x => x?.exports?.Ay?.getSFWDefaultChannel)?.exports?.Ay;
+let api = Object.values(wpRequire.c).find(x => x?.exports?.Bo?.get)?.exports?.Bo;
+
+const supportedTasks = ["WATCH_VIDEO", "PLAY_ON_DESKTOP", "STREAM_ON_DESKTOP", "PLAY_ACTIVITY", "WATCH_VIDEO_ON_MOBILE"];
+let quests = [...QuestsStore.quests.values()].filter(x => x.userStatus?.enrolledAt && !x.userStatus?.completedAt && new Date(x.config.expiresAt).getTime() > Date.now() && supportedTasks.find(y => Object.keys((x.config.taskConfig ?? x.config.taskConfigV2)?.tasks ?? {}).includes(y)));
+
+if (quests.length === 0) {
+    console.log("You don't have any uncompleted quests!");
+} else {
+    let doJob = async function() {
+        const quest = quests.pop();
+        if (!quest) return;
+
+        const questName = quest.config.messages?.questName ?? "Discord Quest";
+        const taskConfig = quest.config.taskConfig ?? quest.config.taskConfigV2;
+        const taskName = supportedTasks.find(x => taskConfig?.tasks?.[x] != null);
+        
+        if (!taskName) {
+            console.log("Unsupported task type, skipping...");
+            return doJob();
+        }
+
+        const secondsNeeded = taskConfig.tasks[taskName].target;
+        let secondsDone = quest.userStatus?.progress?.[taskName]?.value ?? 0;
+
+        console.log(`Starting ${questName} (${taskName})... Target: ${secondsNeeded}s`);
+
+        if (taskName === "WATCH_VIDEO" || taskName === "WATCH_VIDEO_ON_MOBILE") {
+            const speed = 7;
+            while (secondsDone < secondsNeeded) {
+                await new Promise(resolve => setTimeout(resolve, speed * 1000));
+                secondsDone = Math.min(secondsNeeded, secondsDone + speed);
+                
+                try {
+                    const res = await api.post({
+                        url: `/quests/${quest.id}/video-progress`, 
+                        body: { timestamp: Math.min(secondsNeeded, secondsDone + Math.random()) }
+                    });
+                    console.log(`Video Progress: ${secondsDone}/${secondsNeeded}`);
+                    if (res.body?.completed_at) break;
+                } catch (e) {
+                    console.error("Video heartbeat failed, retrying...", e);
+                }
+            }
+            console.log(`${questName} completed!`);
+            doJob();
+        } else {
+            // Direct API Heartbeat mode for game/stream/activity tasks
+            const channelId = ChannelStore?.getSortedPrivateChannels?.()?.[0]?.id ?? 
+                              Object.values(GuildChannelStore?.getAllGuilds?.() ?? {}).find(x => x != null && x.VOCAL?.length > 0)?.VOCAL[0]?.channel?.id ?? 
+                              "0";
+            const streamKey = `call:${channelId}:1`;
+
+            while (secondsDone < secondsNeeded) {
+                await new Promise(resolve => setTimeout(resolve, 20 * 1000));
+                
+                try {
+                    const res = await api.post({
+                        url: `/quests/${quest.id}/heartbeat`, 
+                        body: { stream_key: streamKey, terminal: false }
+                    });
+                    
+                    const progress = res.body?.progress?.[taskName]?.value ?? (secondsDone + 20);
+                    secondsDone = Math.min(secondsNeeded, progress);
+                    console.log(`Quest Progress: ${secondsDone}/${secondsNeeded}`);
+
+                    if (secondsDone >= secondsNeeded) {
+                        await api.post({
+                            url: `/quests/${quest.id}/heartbeat`, 
+                            body: { stream_key: streamKey, terminal: true }
+                        });
+                        break;
+                    }
+                } catch (err) {
+                    console.error("Heartbeat error, retrying...", err);
+                }
+            }
+            console.log(`${questName} completed!`);
+            doJob();
+        }
+    };
+    doJob();
+}
